@@ -1,5 +1,6 @@
 package com.github.sekruse.csv_formatter;
 
+import au.com.bytecode.opencsv.CSVWriter;
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
 import org.apache.commons.csv.*;
@@ -8,6 +9,8 @@ import java.io.*;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 /**
  * The main class.
@@ -25,7 +28,7 @@ public class CsvFormatterApp {
         int recordNumber = 0;
         int numFields = -1;
         try (CSVParser parser = parameters.createCsvParser()) {
-            try (CSVPrinter printer = parameters.createCsvPrinter()) {
+            try (CsvOutput csvOutput = parameters.createCsvOutput()) {
                 ReadLoop:
                 for (CSVRecord csvRecord : parser) {
                     if (++recordNumber == 1) {
@@ -50,9 +53,9 @@ public class CsvFormatterApp {
                         for (String field : csvRecord) {
                             flatRecord.add(flatten(field, ouputEscape));
                         }
-                        printer.printRecord(flatRecord);
+                        csvOutput.write(flatRecord);
                     } else {
-                        printer.printRecord(csvRecord);
+                        csvOutput.write(StreamSupport.stream(csvRecord.spliterator(), false).collect(Collectors.toList()));
                     }
                 }
             }
@@ -182,6 +185,9 @@ public class CsvFormatterApp {
         @Parameter(names = {"-E", "--output-encoding"}, description = "encoding of the output file")
         public String outputEncoding = "UTF-8";
 
+        @Parameter(names = {"-W", "--output-writer"}, description = "writer for the output (commons-csv, opencsv)")
+        public String outputWriter = "commons-csv";
+
         @Parameter(names = {"--cleaning-strategy"}, description = "what to do with too small or large records (keep, drop, fail)")
         public String cleaningStrategy = "fail";
 
@@ -225,19 +231,62 @@ public class CsvFormatterApp {
             return parser;
         }
 
+        public CsvOutput createCsvOutput() throws IOException {
+            switch (this.outputWriter) {
+                case "commons-csv":
+                    return new CsvOutput() {
+                        final CSVPrinter printer = createCsvPrinter();
+
+                        @Override
+                        public void write(List<String> fields) throws IOException {
+                            printer.printRecord(fields);
+                        }
+
+                        @Override
+                        public void close() throws IOException {
+                            printer.close();
+                        }
+                    };
+                case "opencsv":
+                    return new CsvOutput() {
+                        final CSVWriter writer = createCSVWriter();
+
+                        @Override
+                        public void write(List<String> fields) throws IOException {
+                            writer.writeNext(fields.toArray(new String[fields.size()]));
+                        }
+
+                        @Override
+                        public void close() throws IOException {
+                            writer.close();
+                        }
+                    };
+                default:
+                    throw new IllegalArgumentException("Unknown output writer.");
+            }
+        }
+
+        /**
+         * Creates a {@link Writer} according to the specification of this instance.
+         * @return the {@link Writer}
+         */
+        private Writer createWriter() throws FileNotFoundException, UnsupportedEncodingException {
+            final Writer writer;
+            if (this.outputFile == null) {
+                writer = new OutputStreamWriter(System.out, this.outputEncoding);
+            } else {
+                writer = new OutputStreamWriter(new FileOutputStream(this.outputFile), this.outputEncoding);
+            }
+            return writer;
+        }
+
         /**
          * Creates a {@link CSVPrinter} according to the settings of this instance.
          *
          * @return the {@link CSVPrinter}
          */
         public CSVPrinter createCsvPrinter() throws IOException {
-            final Charset outputCharset = Charset.forName(this.outputEncoding);
-            final Writer writer;
-            if (this.outputFile == null) {
-                writer = new OutputStreamWriter(System.out, outputCharset);
-            } else {
-                writer = new OutputStreamWriter(new FileOutputStream(this.outputFile), outputCharset);
-            }
+            final Writer writer = this.createWriter();
             CSVFormat outputCsvFormat = createCsvFormat(
                     this.outputFieldSeparator,
                     this.outputRecordSeparator,
@@ -255,6 +304,21 @@ public class CsvFormatterApp {
                 throw e;
             }
             return printer;
+        }
+
+        /**
+         * Creates a {@link CSVWriter} according to the settings of this instance.
+         *
+         * @return the {@link CSVWriter}
+         */
+        public CSVWriter createCSVWriter() throws IOException {
+            return new CSVWriter(
+                    this.createWriter(),
+                    parseConfigChar(this.outputFieldSeparator),
+                    parseConfigChar(this.outputQuote),
+                    parseConfigChar(this.outputEscape),
+                    parseConfigString(this.outputRecordSeparator)
+            );
         }
 
         /**
